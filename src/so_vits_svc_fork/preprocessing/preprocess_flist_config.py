@@ -33,7 +33,7 @@ def preprocess_config(
     spk_dict = {}
     spk_id = 0
     random = np.random.RandomState(1234)
-    for speaker in os.listdir(input_dir):
+    for speaker in sorted(os.listdir(input_dir)):
         spk_dict[speaker] = spk_id
         spk_id += 1
         paths = []
@@ -78,6 +78,7 @@ def preprocess_config(
         )
     )
     config["spk"] = spk_dict
+    config["model"]["n_speakers"] = len(spk_dict)
     config["data"]["training_files"] = train_list_path.as_posix()
     config["data"]["validation_files"] = val_list_path.as_posix()
     LOG.info(f"Writing {config_path}")

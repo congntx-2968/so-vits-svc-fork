@@ -21,7 +21,7 @@ import torchaudio
 from cm_time import timer
 from numpy import ndarray
 from tqdm import tqdm
-from transformers import HubertModel
+from transformers import HubertModel, Wav2Vec2Model
 
 from so_vits_svc_fork.hparams import HParams
 
@@ -169,6 +169,16 @@ class HubertModelWithFinalProj(HubertModel):
         self.final_proj = nn.Linear(config.hidden_size, config.classifier_proj_size)
 
 
+class Wav2Vec2ModelWithFinalProj(Wav2Vec2Model):
+    def __init__(self, config):
+        super().__init__(config)
+
+        # The final projection layer is only used for backward compatibility.
+        # Following https://github.com/auspicious3000/contentvec/issues/6
+        # Remove this layer is necessary to achieve the desired outcome.
+        self.final_proj = nn.Linear(config.hidden_size, config.classifier_proj_size)
+
+
 def remove_weight_norm_if_exists(module, name: str = "weight"):
     r"""Removes the weight normalization reparameterization from a module.
 
@@ -190,17 +200,39 @@ def remove_weight_norm_if_exists(module, name: str = "weight"):
 
 
 def get_hubert_model(
-    device: str | torch.device, final_proj: bool = True
+    model_name: str, device: str | torch.device, final_proj: bool = True
 ) -> HubertModel:
-    if final_proj:
-        model = HubertModelWithFinalProj.from_pretrained("lengyue233/content-vec-best")
-    else:
-        model = HubertModel.from_pretrained("lengyue233/content-vec-best")
+    LOG.info(f"Loading HuBERT model: {model_name} final_proj={final_proj}")
+    model_type = model_name.split("/")[-1]
+    _cls = Wav2Vec2ModelWithFinalProj if final_proj else Wav2Vec2Model
+    if model_type.startswith("content-vec"):
+        _cls = HubertModelWithFinalProj if final_proj else HubertModel
+    model = _cls.from_pretrained(model_name)
     # Hubert is always used in inference mode, we can safely remove weight-norms
     for m in model.modules():
         if isinstance(m, (nn.Conv2d, nn.Conv1d)):
             remove_weight_norm_if_exists(m)
 
+    return model.to(device)
+
+
+def get_whisper_model(device: str | torch.device, checkpoint_path: str, half = False) -> Whisper:
+    def _load_model() -> Whisper:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        dims = ModelDimensions(**checkpoint["dims"])
+        LOG.info(f"Whisper model dimensions: {dims}")
+        model = Whisper(dims)
+        # del model.decoder
+        cut = len(model.encoder.blocks) // 4
+        cut = -1 * cut
+        del model.encoder.blocks[cut:]
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        model.eval()
+        if half:
+            model.half()
+        return model.encoder
+    LOG.info("Loading Whisper model")
+    model = _load_model()
     return model.to(device)
 
 
