@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import DeviceStatsMonitor
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.tuner import Tuner
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -28,6 +28,7 @@ from .dataset import TextAudioCollate, TextAudioDataset
 from .logger import is_notebook
 from .modules.descriminators import MultiPeriodDiscriminator
 from .modules.losses import discriminator_loss, feature_loss, generator_loss, kl_loss
+from .modules.stft_loss import MultiResolutionSTFTLoss
 from .modules.mel_processing import mel_spectrogram_torch
 from .modules.synthesizers import SynthesizerTrn
 
@@ -181,6 +182,10 @@ class VitsLightning(pl.LightningModule):
         )
         self.scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
             self.optim_d, gamma=self.hparams.train.lr_decay
+        )
+        self.stft_criterion = MultiResolutionSTFTLoss(
+            self.device,
+            [(512, 50, 240), (1024, 120, 600), (2048, 240, 1200), (4096, 480, 2400), (8192, 960, 4800)]
         )
         self.optimizers_count = 2
         self.load(reset_optimizer)
@@ -444,15 +449,17 @@ class VitsLightning(pl.LightningModule):
         # generator loss
         y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.net_d(y, y_hat)
 
-        with autocast(enabled=False):
+        with autocast(str(y.device), enabled=False):
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.train.c_mel
+            sc_loss, mag_loss = self.stft_criterion(y_hat.squeeze(1), y.squeeze(1))
+            stft_loss = (sc_loss + mag_loss) * self.hparams.train.get("c_stft", self.hparams.train.c_mel)
             loss_kl = (
                 kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * self.hparams.train.c_kl
             )
             loss_fm = feature_loss(fmap_r, fmap_g)
             loss_gen, losses_gen = generator_loss(y_d_hat_g)
             loss_lf0 = F.mse_loss(pred_lf0, lf0)
-            loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl + loss_lf0
+            loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl + loss_lf0 + stft_loss
 
             # MB-iSTFT-VITS
             loss_subband = torch.tensor(0.0)
@@ -470,6 +477,7 @@ class VitsLightning(pl.LightningModule):
                 "loss/g/total": loss_gen_all,
                 "loss/g/fm": loss_fm,
                 "loss/g/mel": loss_mel,
+                "loss/g/stft": stft_loss,
                 "loss/g/kl": loss_kl,
                 "loss/g/lf0": loss_lf0,
             },
@@ -520,7 +528,7 @@ class VitsLightning(pl.LightningModule):
         y_d_hat_r, y_d_hat_g, _, _ = self.net_d(y, y_hat.detach())
 
         # discriminator loss
-        with autocast(enabled=False):
+        with autocast(str(y.device), enabled=False):
             loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
                 y_d_hat_r, y_d_hat_g
             )

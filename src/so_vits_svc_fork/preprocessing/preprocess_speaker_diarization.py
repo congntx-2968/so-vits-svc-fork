@@ -7,6 +7,7 @@ from pathlib import Path
 import librosa
 import soundfile as sf
 import torch
+import torchaudio
 from joblib import Parallel, delayed
 from pyannote.audio import Pipeline
 from tqdm import tqdm
@@ -36,8 +37,18 @@ def _process_one(
         raise ValueError("Failed to load pipeline")
     pipeline = pipeline.to(torch.device("cuda"))
     LOG.info(f"Processing {input_path}. This may take a while...")
+    waveform, sample_rate = torchaudio.load(input_path)
+    if waveform.shape[-1] / sample_rate < 10:
+        LOG.warning(f"Audio too short: {input_path}")
+        return
     diarization = pipeline(
-        input_path, min_speakers=min_speakers, max_speakers=max_speakers
+        # input_path, min_speakers=min_speakers, max_speakers=max_speakers
+        {
+            "waveform": waveform,
+            "sample_rate": sample_rate,
+            "min_speakers": min_speakers,
+            "max_speakers": max_speakers,
+        }
     )
 
     LOG.info(f"Found {len(diarization)} tracks, writing to {output_dir}")

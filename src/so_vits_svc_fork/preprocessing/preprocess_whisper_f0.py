@@ -11,10 +11,10 @@ import torch
 import torchaudio
 from joblib import Parallel, cpu_count, delayed
 from tqdm import tqdm
-from transformers import HubertModel
 
 import so_vits_svc_fork.f0
 from so_vits_svc_fork import utils
+from so_vits_svc_fork.whisper.model import Whisper
 
 from ..hparams import HParams
 from ..modules.mel_processing import spec_to_mel_torch, spectrogram_torch
@@ -22,14 +22,14 @@ from ..utils import get_optimal_device, get_total_gpu_memory
 from .preprocess_utils import check_hubert_min_duration
 
 LOG = getLogger(__name__)
-HUBERT_MEMORY = 3500
-HUBERT_MEMORY_CREPE = 4500
+HUBERT_MEMORY = 1500
+HUBERT_MEMORY_CREPE = 2500
 
 
 def _process_one(
     *,
     filepath: Path,
-    content_model: HubertModel,
+    content_model: Whisper,
     device: torch.device | str = get_optimal_device(),
     f0_method: Literal["crepe", "crepe-tiny", "parselmouth", "dio", "harvest"] = "dio",
     force_rebuild: bool = False,
@@ -55,13 +55,7 @@ def _process_one(
 
     # Compute HuBERT content
     audio = torch.from_numpy(audio).float().to(device)
-    c = utils.get_content(
-        content_model,
-        audio,
-        device,
-        sr=sr,
-        legacy_final_proj=hps.data.get("contentvec_final_proj", True),
-    )
+
     c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
     torch.cuda.empty_cache()
 
@@ -102,11 +96,10 @@ def _process_one(
         torch.save(data, f)
 
 
-def _process_batch(filepaths: Iterable[Path], pbar_position: int, **kwargs):
+def _process_batch(filepaths: Iterable[Path], pbar_position: int, whisper_checkpoint_path: str, **kwargs):
     hps = kwargs["hps"]
-    content_model = utils.get_hubert_model(
-        hps.data.get("hubert_model", "nguyenvulebinh/wav2vec2-large-vi"),
-        get_optimal_device(), hps.data.get("contentvec_final_proj", True)
+    content_model = utils.get_whisper_model(
+        get_optimal_device(), whisper_checkpoint_path, hps.model.get("float16", False)
     )
 
     for filepath in tqdm(filepaths, position=pbar_position):

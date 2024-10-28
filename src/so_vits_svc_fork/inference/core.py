@@ -117,6 +117,7 @@ class Svc:
         self.hop_size = self.hps.data.hop_length
         self.spk2id = self.hps.spk
         self.hubert_model = utils.get_hubert_model(
+            self.hps.data.get("hubert_model", "nguyenvulebinh/wav2vec2-large-vi"),
             self.device, self.hps.data.get("contentvec_final_proj", True)
         )
         self.dtype = torch.float16 if half else torch.float32
